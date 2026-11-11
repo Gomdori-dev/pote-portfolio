@@ -1,0 +1,57 @@
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),assert=require('node:assert/strict'),ts=require('../node_modules/typescript');
+const root=process.cwd(),cache=new Map(),calls=[],tasks=[];
+let permitted=true,failures=[],unique=new Map();
+const mail={MAIL_FROM:'Pote Gallery <applications@potegallery.com>',MAIL_INBOX:'poteart.gallery@gmail.com',getResend:()=>({emails:{send:async(payload,options)=>{calls.push({payload,options});const error=failures.shift();if(error==='network')throw Error('network');if(error)return {error:{name:error}};const key=options?.idempotencyKey;let id=unique.get(key)||`mail-${unique.size+1}`;if(key)unique.set(key,id);return {data:{id},error:null};}}})};
+function load(file){
+  file=file.replace(/\\/g,'/');
+  if(file==='next/server')return {NextResponse:{json:(data,init)=>Response.json(data,init)},after:fn=>tasks.push(fn)};
+  if(file.endsWith('/mail.ts'))return mail;
+  if(file.endsWith('/rate-limit.ts'))return {allow:()=>permitted,clientIp:()=> 'fixture'};
+  if(file.endsWith('/analytics-server.ts'))return {recordInquirySafely:async()=>{},analyticsCollectionEnabled:()=>false};
+  if(cache.has(file))return cache.get(file).exports;
+  const mod={exports:{}};cache.set(file,mod);
+  const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+  const requireLocal=name=>name.startsWith('@/')?load(path.join(root,'src',name.slice(2))+'.ts'):name.startsWith('.')?load(path.resolve(path.dirname(file),name)+'.ts'):loadOrRequire(name);
+  vm.runInThisContext(`(function(require,module,exports){${code}\n})`,{filename:file})(requireLocal,mod,mod.exports);return mod.exports;
+}
+function loadOrRequire(name){return name==='next/server'?load(name):require(name);}
+const contact=load(path.join(root,'src/lib/contact.ts')),extras=load(path.join(root,'src/lib/artwork-extras.ts')),reg=load(path.join(root,'src/lib/artwork-registration.ts')),email=load(path.join(root,'src/lib/application-mail.ts')),route=load(path.join(root,'src/app/api/contact/route.ts'));
+const app={artistName:'테스트 작가',lang:'ko',workType:'photo',profilePhotoUrl:'https://vr4iop7ft7hr1nyt.public.blob.vercel-storage.com/applications/fixture.png',eligible:true,consent:true,termsAccepted:true};
+const message={subject:'[Pote] 신청',text:'operator-only portfolio business information',replyTo:'fixture@example.com',type:'artist_application',application:app,applicationTracking:{sessionId:'10000000-0000-4000-8000-000000000001',attribution:{source:'meta',medium:'paid_social',campaign:'recruit_fixture',content:'carousel_a',term:null,landing:'/apply'}}};
+const request=(body,origin='https://potegallery.com')=>new Request('https://potegallery.com/api/contact',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify(body)});
+(async()=>{
+  assert(contact.validContact(message));
+  for(const workType of ['print','digital','ai','unknown'])assert(!contact.validContact({...message,application:{...app,workType}}));
+  for(const lang of ['fr',null])assert(!contact.validContact({...message,application:{...app,lang}}));
+  for(const artistName of ['','test\r\nBcc: other@example.com','<script>'])assert(!contact.validContact({...message,application:{...app,artistName}}));
+  for(const consent of [false,undefined])assert(!contact.validContact({...message,application:{...app,consent}}));
+  assert(!contact.validContact({...message,application:{...app,profilePhotoUrl:'https://example.com/profile.png'}}));
+  assert(!contact.validContact({...message,type:undefined}));
+  assert(contact.validContact({subject:'Artist application',text:'ordinary inquiry',replyTo:'fixture@example.com'}));
+  const facts={medium:'photo',workKind:'limited',condition:'clear',signature:'signed',signatureLocation:'back',pricing:'fixed',authorized:true,installation:'needs',certificateAvailability:'no',frame:'needs',edition:'3/20',photoProcess:'inkjet',photoPaper:'cotton'};
+  assert.equal(reg.registrationError(extras.parseArtworkExtras(facts),'150000',false,true),null);
+  for(const override of [{workKind:'original'},{signature:'unsigned'},{edition:'21/20'},{edition:'0/20'},{photoProcess:undefined},{photoPaper:undefined},{frame:'framed'},{medium:undefined},{workKind:'open'},{workKind:'reproduction'}])assert(reg.registrationError(extras.parseArtworkExtras({...facts,...override}),'150000',false,true));
+  assert.equal(reg.registrationError(extras.parseArtworkExtras({...facts,medium:'craft',workKind:'original',depthCm:3}),'150000',false,true),null);
+  assert(reg.registrationError(extras.parseArtworkExtras({...facts,medium:'craft',workKind:'original',depthCm:0}),'150000',false,true));
+  const legacy={...facts,medium:undefined};assert.equal(reg.registrationError(extras.parseArtworkExtras(legacy),'150000',false),null);
+  process.env.APPLICATION_CONFIRMATION_ENABLED='true';
+  assert.equal((await route.POST(request(message,'https://bad.example'))).status,403);
+  permitted=false;assert.equal((await route.POST(request(message))).status,429);permitted=true;
+  assert.equal((await route.POST(request({...message,application:{...app,workType:'digital'}}))).status,400);assert.equal(calls.length,0);
+  failures=['validation_error'];assert.equal((await route.POST(request(message))).status,502);assert.equal(tasks.length,0);
+  calls.length=0;failures=[];
+  const result=await route.POST(request(message));assert.equal(result.status,200);assert.deepEqual(await result.json(),{ok:true,confirmation:'queued'});assert.equal(calls.length,1);assert.equal(tasks.length,2);
+  assert(calls[0].payload.text.includes('캠페인: recruit_fixture'));assert(calls[0].payload.text.includes('소재: carousel_a'));
+  assert.equal(email.applicationKey(message),email.applicationKey({...message,applicationTracking:undefined}),'attribution must not change mail idempotency');
+  failures=['network', 'rate_limit_exceeded'];await tasks.shift()();await tasks.shift()();assert.equal(calls.length,4);
+  const receipts=calls.slice(1);assert(receipts.every(c=>c.options.idempotencyKey===receipts[0].options.idempotencyKey));assert(receipts.every(c=>c.payload.to==='fixture@example.com'&&c.payload.replyTo===mail.MAIL_INBOX&&!c.payload.text.includes(message.text)&&!c.payload.text.includes('blob.vercel-storage')));
+  assert(receipts[0].payload.text.includes('참여 확정 안내는 아닙니다'));
+  await route.POST(request(message));await tasks.shift()();await tasks.shift()();assert.equal(unique.size,2);
+  assert.equal(calls[0].options.idempotencyKey,calls.at(-2).options.idempotencyKey);
+  const en=email.applicationConfirmation({...app,lang:'en'});assert(en.subject.includes('received'));assert(en.text.includes('does not confirm acceptance'));assert(!en.text.includes('테스트')||en.text.startsWith('Hello 테스트'));
+  calls.length=0;failures=['validation_error'];assert.equal(await email.sendApplicationConfirmation(message,email.applicationKey(message)),false);assert.equal(calls.length,1);
+  process.env.APPLICATION_CONFIRMATION_ENABLED='false';const disabled=await route.POST(request(message));assert.deepEqual(await disabled.json(),{ok:true,confirmation:'unavailable'});assert.equal(tasks.length,1);await tasks.shift()();
+  process.env.APPLICATION_CONFIRMATION_ENABLED='true';mail.MAIL_FROM='Pote <onboarding@resend.dev>';assert.equal(email.confirmationEnabled(),false);
+  const n=calls.length;await route.POST(request({subject:'Artist application',text:'ordinary inquiry',replyTo:'fixture@example.com'}));assert.equal(calls.length,n+1);assert.equal(tasks.length,1);await tasks.shift()();
+  console.log('PASS: participation eligibility, photograph/craft facts, server validation, owner-first receipt, mail failures, retries, bilingual copy, idempotency and generic inquiry isolation');
+})().catch(e=>{console.error(e);process.exitCode=1});

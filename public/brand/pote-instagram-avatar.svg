@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800" role="img" aria-labelledby="title desc">
+  <title id="title">Pote Instagram profile mark</title>
+  <desc id="desc">A warm-orange italic "P." monogram on Pote's deep forest background, matching the site's Georgia-serif brand identity.</desc>
+  <defs>
+    <linearGradient id="orange" x1="203" y1="251" x2="452" y2="549" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6ca98"/>
+      <stop offset=".55" stop-color="#f2b87d"/>
+      <stop offset="1" stop-color="#ec9951"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="800" fill="#071c18"/>
+  <circle cx="400" cy="400" r="318" fill="#0d2822" stroke="#985216" stroke-width="6"/>
+  <!--
+    Rendered as text here for editability — Georgia is a common system
+    font so this should render reasonably even outside a browser, but the
+    shipped PNG (same folder) was still rasterized from an actual browser
+    render (canvas + toDataURL) with measureText-verified bounds, matching
+    how every other brand asset in this project is produced. Re-render the
+    PNG after editing this rather than trusting this fallback text alone.
+  -->
+  <text x="366" y="549" fill="url(#orange)" font-family="Georgia, serif" font-style="italic" font-size="424" font-weight="700" text-anchor="middle">P</text>
+  <circle cx="552" cy="533" r="19" fill="#ec9951"/>
+</svg>

@@ -1,0 +1,16 @@
+.profile :global(.ap-name),
+.profile :global(.ap-alt-name),
+.profile :global(.ap-medium),
+.profile :global(.ap-glance-title),
+.profile :global(.ap-works .section-heading h2) {
+  text-align: center;
+}
+
+.profile :global(.ap-quote p) {
+  white-space: pre-line;
+}
+
+.profile :global(.ap-cv-group h3) {
+  justify-content: center;
+  text-align: center;
+}

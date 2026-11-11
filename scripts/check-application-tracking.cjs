@@ -1,0 +1,47 @@
+const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm'), assert = require('node:assert/strict'), ts = require('../node_modules/typescript');
+const root = process.cwd(), cache = new Map();
+let clock = Date.now(); Date.now = () => clock;
+const storage = new Map();
+global.sessionStorage = { getItem: k => storage.get(k) ?? null, setItem: (k,v) => storage.set(k,v) };
+global.window = { location: { search: '?utm_source=meta&utm_medium=paid_social&utm_campaign=recruit_202610&utm_content=carousel_a&utm_term=set_a', pathname: '/' } };
+function load(file) {
+  file = file.replace(/\\/g, '/');
+  if (file.endsWith('/analytics-client.ts')) return { newInquiryId: () => require('node:crypto').randomUUID() };
+  if (cache.has(file)) return cache.get(file).exports;
+  const mod = { exports: {} }; cache.set(file, mod);
+  const code = ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
+  vm.runInThisContext(`(function(require,module,exports){${code}\n})`, { filename: file })(name => name.startsWith('.') ? load(path.resolve(path.dirname(file), name) + '.ts') : require(name), mod, mod.exports);
+  return mod.exports;
+}
+const shared = load(path.join(root, 'src/lib/application-tracking.ts'));
+const client = load(path.join(root, 'src/lib/application-tracking-client.ts'));
+(async () => {
+  const first = client.captureApplicationSource();
+  assert.equal(first.attribution.content, 'carousel_a');
+  window.location = { search: '', pathname: '/apply' };
+  assert.deepEqual(client.captureApplicationSource(), first, 'internal navigation retains attribution');
+  assert.deepEqual(client.readApplicationTracking(), first, 'long form retains the original cohort');
+  window.location.search = '?utm_source=meta&utm_medium=paid_social&utm_campaign=recruit_202610&utm_content=carousel_b';
+  const second = client.captureApplicationSource();
+  assert.notEqual(second.sessionId, first.sessionId, 'new ad in same browser creates another cohort');
+  assert.equal(second.attribution.content, 'carousel_b');
+  assert.equal(client.captureApplicationSource().sessionId, second.sessionId, 'rerenders deduplicate visits');
+  clock += 31 * 60 * 1000; window.location.search = '';
+  assert.equal(client.captureApplicationSource().attribution.campaign, null, 'new direct session does not inherit stale ad');
+  const set = sessionStorage.setItem; sessionStorage.setItem = () => { throw Error('blocked'); }; sessionStorage.getItem = () => { throw Error('blocked'); };
+  assert.doesNotThrow(() => client.captureApplicationSource());
+  sessionStorage.setItem = set;
+  assert.equal(shared.parseApplicationTracking({ sessionId: 'bad' }), null);
+  assert.equal(shared.applicationSource({ campaign: 'person@example.com', landing: '/apply?email=private', content: '<script>' }).campaign, null);
+  assert.equal(shared.applicationSource({ landing: '/apply?email=private' }).landing, null);
+  const keys = new Set(), calls = [];
+  const sql = async (strings, ...values) => { calls.push({ strings, values }); const key = values[0]; if (keys.has(key)) return []; keys.add(key); return [{ event_key: key }]; };
+  await shared.recordApplicationEvent(sql, 'visit', first);
+  await shared.recordApplicationEvent(sql, 'visit', first);
+  await shared.recordApplicationEvent(sql, 'start', first);
+  await shared.recordApplicationEvent(sql, 'accepted', first, 'fixture-application-key');
+  await shared.recordApplicationEvent(sql, 'accepted', second, 'fixture-application-key');
+  assert.equal(keys.size, 3, 'repeated page event and accepted application are each idempotent');
+  assert(!JSON.stringify(calls).includes('person@example.com'));
+  console.log('Application attribution checks passed: navigation, campaign changes, session expiry, storage failure, privacy, duplicate receipt.');
+})().catch(e => { console.error(e); process.exitCode = 1; });
